@@ -146,6 +146,44 @@ class behat_block_my_feedback extends behat_base
     }
 
     /**
+     * Create finished quiz attempts for users.
+     *
+     * @Given /^the following quiz attempts exist:$/
+     * @param TableNode $table
+     * @return void
+     */
+    public function the_following_quiz_attempts_exist(TableNode $table): void {
+        global $DB;
+
+        foreach ($table->getHash() as $row) {
+            $activity = $this->get_activity_by_name($row['quiz']);
+            if ($activity->modname !== 'quiz') {
+                throw new \coding_exception('Activity is not a quiz: ' . $row['quiz']);
+            }
+
+            $userid = $DB->get_field('user', 'id', ['username' => $row['user']], MUST_EXIST);
+            $attempt = new \stdClass();
+            $attempt->quiz = $activity->instanceid;
+            $attempt->userid = $userid;
+            $attempt->attempt = 1;
+            $attempt->uniqueid = 0;
+            $attempt->layout = '';
+            $attempt->currentpage = 0;
+            $attempt->preview = 0;
+            $attempt->state = 'finished';
+            $attempt->timestart = time() - HOURSECS;
+            $attempt->timefinish = time() - MINSECS;
+            $attempt->timemodified = time() - MINSECS;
+            $attempt->timecheckstate = 0;
+            $attempt->sumgrades = 0;
+            $DB->insert_record('quiz_attempts', $attempt);
+
+            $cm = get_coursemodule_from_id('quiz', $activity->cmid, 0, false, MUST_EXIST);
+            rebuild_course_cache($cm->course, true);
+        }
+    }
+
+    /**
      * Set activity visibility.
      *
      * @Given /^I set activity "(?P<activityname>[^"]*)" to "(?P<visibility>hidden|visible)"$/
