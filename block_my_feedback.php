@@ -329,7 +329,11 @@ class block_my_feedback extends block_base {
         $gradeitemid = $DB->get_field('grade_items', 'id', $params);
 
         // Check that mod has missing markings.
-        $submitterids = array_column(feedback_tracker::get_module_submissions($mod), 'userid');
+        $submissions = feedback_tracker::get_module_submissions($mod);
+        $submitterids = array_values(array_filter(array_map(
+            static fn($submission) => $submission->userid ?? null,
+            $submissions
+        )));
         $assess->requiremarking = feedback_tracker::count_missing_grades($mod, $submitterids, $gradeitemid, true);
         if ($assess->requiremarking === 0) {
             return false;
