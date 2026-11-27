@@ -267,7 +267,8 @@ final class my_feedback_test extends advanced_testcase {
      * @covers ::get_submissions
      */
     public function test_get_submissions(): void {
-        $submissions = $this->block->get_submissions($this->student1);
+        $student1courses = enrol_get_all_users_courses($this->student1->id, true, ['enddate']);
+        $submissions = $this->block->get_submissions($this->student1, $student1courses);
         foreach ($submissions as $submission) {
             // Assert that all submissions are by the given user.
             $this->assertEquals($this->student1->id, $submission->userid);
@@ -277,7 +278,8 @@ final class my_feedback_test extends advanced_testcase {
             $this->assertTrue($submission->lastmodified >= strtotime('-3 month'));
         }
 
-        $submissions = $this->block->get_submissions($this->student2);
+        $student2courses = enrol_get_all_users_courses($this->student2->id, true, ['enddate']);
+        $submissions = $this->block->get_submissions($this->student2, $student2courses);
         foreach ($submissions as $submission) {
             // Assert that all submissions are by the given user.
             $this->assertEquals($this->student2->id, $submission->userid);
@@ -286,6 +288,60 @@ final class my_feedback_test extends advanced_testcase {
             // Assert the result only contains submissions not older than 3 month.
             $this->assertTrue($submission->lastmodified >= strtotime('-3 month'));
         }
+    }
+
+    /**
+     * A supplied course list constrains the submissions query.
+     *
+     * @covers ::get_submissions
+     */
+    public function test_get_submissions_uses_supplied_course_list(): void {
+        $this->assertSame([], $this->block->get_submissions($this->student1, []));
+    }
+
+    /**
+     * Feedback date range checks either date and rejects missing feedback deadlines.
+     *
+     * @covers ::dates_in_range
+     */
+    public function test_dates_in_range(): void {
+        $now = time();
+        $this->assertTrue(\block_my_feedback::dates_in_range(strtotime('-4 month'), $now));
+        $this->assertTrue(\block_my_feedback::dates_in_range($now, $now + DAYSECS));
+        $this->assertFalse(\block_my_feedback::dates_in_range($now, 0));
+        $this->assertFalse(\block_my_feedback::dates_in_range(strtotime('-4 month'), strtotime('-3 month')));
+    }
+
+    /**
+     * User-hidden grades are not returned as feedback until their hide time has passed.
+     *
+     * @return void
+     * @covers ::get_submissions
+     */
+    public function test_get_submissions_excludes_user_hidden_grades(): void {
+        global $DB;
+
+        $item = $DB->get_record('grade_items', [
+            'courseid' => $this->course->id,
+            'itemmodule' => 'assign',
+            'itemname' => 'Grade assign item 1',
+        ], '*', MUST_EXIST);
+        $grade = $DB->get_record('grade_grades', [
+            'itemid' => $item->id,
+            'userid' => $this->student1->id,
+        ], '*', MUST_EXIST);
+        $courses = enrol_get_all_users_courses($this->student1->id, true, ['enddate']);
+        $submissions = $this->block->get_submissions($this->student1, $courses);
+        $gradeids = array_column($submissions, 'gradeid');
+        $this->assertContains((int)$grade->id, array_map('intval', $gradeids));
+
+        $grade->hidden = time() + DAYSECS;
+        $DB->update_record('grade_grades', $grade);
+
+        $submissions = $this->block->get_submissions($this->student1, $courses);
+        $gradeids = array_column($submissions, 'gradeid');
+
+        $this->assertNotContains((int)$grade->id, array_map('intval', $gradeids));
     }
 
     /**
@@ -311,7 +367,7 @@ final class my_feedback_test extends advanced_testcase {
         $this->getDataGenerator()->enrol_user($teacher->id, $course1->id, 'teacher');
         $this->getDataGenerator()->enrol_user($teacher->id, $course2->id, 'teacher');
 
-        foreach ([[$course1, 'Assign course 1'], [$course2, 'Assign course 2']] as [$course, $name]) {
+        foreach ([[$course1, 'Assign course 1'], [$course2, 'Assign course 2']] as $index => [$course, $name]) {
             $module = $this->getDataGenerator()->create_module('assign', [
                 'course' => $course->id,
                 'name' => $name,
@@ -332,19 +388,21 @@ final class my_feedback_test extends advanced_testcase {
                 'attemptnumber' => 0,
                 'grade' => '75',
                 'usermodified' => $teacher->id,
-                'timemodified' => time() - HOURSECS,
+                'timemodified' => time() - (2 - $index) * HOURSECS,
             ]);
         }
 
         $block = new \block_my_feedback();
         $block->page = $page;
 
-        $submissions = $block->get_submissions($student);
+        $enrolledcourses = enrol_get_all_users_courses($student->id, true, ['enddate']);
+        $submissions = $block->get_submissions($student, $enrolledcourses);
         $courses = array_unique(array_map(fn($submission) => $submission->course, $submissions));
         sort($courses);
 
         $this->assertCount(2, $submissions);
         $this->assertEqualsCanonicalizing([$course1->id, $course2->id], $courses);
+        $this->assertEquals([$course2->id, $course1->id], array_column($submissions, 'course'));
     }
 
     /**
@@ -355,7 +413,8 @@ final class my_feedback_test extends advanced_testcase {
      */
     public function test_fetch_feedback(): void {
         // Test the feedback as student1.
-        $feedback = $this->block->fetch_feedback($this->student1);
+        $student1courses = enrol_get_all_users_courses($this->student1->id, true, ['enddate']);
+        $feedback = $this->block->fetch_feedback($this->student1, $student1courses);
         $this->assertNotEmpty($feedback, 'Returning recent visible feedback for student 1.');
         $this->assertLessThanOrEqual(5, count($feedback), 'Returning no more than 5 submissions for student 1.');
 
@@ -367,10 +426,36 @@ final class my_feedback_test extends advanced_testcase {
         }
 
         // Test the feedback as student2 - there should be at most one visible recent item.
-        $feedback = $this->block->fetch_feedback($this->student2);
+        $student2courses = enrol_get_all_users_courses($this->student2->id, true, ['enddate']);
+        $feedback = $this->block->fetch_feedback($this->student2, $student2courses);
         if ($feedback !== null) {
             $this->assertCount(1, $feedback, 'Returning only 1 visible recent submission for student 2.');
         }
+    }
+
+    /**
+     * Hidden activities are excluded from the displayed feedback.
+     *
+     * @covers ::fetch_feedback
+     */
+    public function test_fetch_feedback_excludes_hidden_activities(): void {
+        global $DB;
+
+        $this->setUser($this->student1);
+        $courses = enrol_get_all_users_courses($this->student1->id, true, ['enddate']);
+        $feedback = $this->block->fetch_feedback($this->student1, $courses);
+        $this->assertNotNull($feedback);
+        $this->assertContains('Grade assign item 1', array_column($feedback, 'name'));
+
+        $this->setAdminUser();
+        $assign = $DB->get_record('assign', ['course' => $this->course->id, 'name' => 'Assign 1'], 'id', MUST_EXIST);
+        $cm = get_coursemodule_from_instance('assign', $assign->id, $this->course->id);
+        set_coursemodule_visible($cm->id, 0);
+
+        $this->setUser($this->student1);
+        $feedback = $this->block->fetch_feedback($this->student1, $courses);
+        $this->assertNotNull($feedback);
+        $this->assertNotContains('Grade assign item 1', array_column($feedback, 'name'));
     }
 
     /**
@@ -399,7 +484,8 @@ final class my_feedback_test extends advanced_testcase {
 
         $DB->set_field('grade_grades', 'usermodified', null, ['id' => $assignsubmission->id]);
 
-        $feedback = $this->block->fetch_feedback($this->student1);
+        $courses = enrol_get_all_users_courses($this->student1->id, true, ['enddate']);
+        $feedback = $this->block->fetch_feedback($this->student1, $courses);
 
         $this->assertNotNull($feedback);
 
